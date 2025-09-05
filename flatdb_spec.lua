@@ -7,7 +7,6 @@ describe("FlatDB", function()
 
     -- Setup: Create a clean test directory before each test.
     before_each(function()
-        -- Clean up any previous test directory
         os.execute("rm -rf " .. TEST_DIR)
         os.execute("mkdir " .. TEST_DIR)
     end)
@@ -16,6 +15,10 @@ describe("FlatDB", function()
     after_each(function()
         os.execute("rm -rf " .. TEST_DIR)
     end)
+
+    -- =============================================================================
+    -- Core Functionality Tests
+    -- =============================================================================
 
     it("should create a database object for a valid directory", function()
         local db = flatdb(TEST_DIR)
@@ -54,13 +57,11 @@ describe("FlatDB", function()
 
         assert.is_true(success)
 
-        -- Verify file content
         local f = io.open(page_path, "r")
         assert.is_not_nil(f, "File was not created.")
         local content = f:read("*a")
         f:close()
 
-        -- A simple check to see if the content seems correct
         assert.matches('"theme":"dark"', content)
         assert.matches('"language":"en"', content)
     end)
@@ -69,15 +70,11 @@ describe("FlatDB", function()
         local page_path = TEST_DIR .. "/inventory"
         local file_content = '{"item":"sword","quantity":10,"tags":["weapon","melee"]}'
 
-        -- Manually create a file to simulate a pre-existing page
         local f = io.open(page_path, "w")
         f:write(file_content)
         f:close()
 
-        -- Create a new db instance to ensure data is not already in memory
         local db = flatdb(TEST_DIR)
-
-        -- Accessing `db.inventory` should trigger a load from the file
         local inventory_page = db.inventory
         assert.is_not_nil(inventory_page)
         assert.are.equal("sword", inventory_page.item)
@@ -93,24 +90,19 @@ describe("FlatDB", function()
         local success = db:save()
         assert.is_true(success)
 
-        -- Verify both files exist
         local user_file = io.open(TEST_DIR .. "/users", "r")
         local config_file = io.open(TEST_DIR .. "/config", "r")
-
         assert.is_not_nil(user_file)
         assert.is_not_nil(config_file)
-
         user_file:close()
         config_file:close()
     end)
     
     it("should retrieve data correctly after saving and reloading", function()
-        -- First session
         local db1 = flatdb(TEST_DIR)
         db1.game_state = { level = 5, score = 1250 }
         db1:save("game_state")
 
-        -- Second session (new instance)
         local db2 = flatdb(TEST_DIR)
         assert.is_not_nil(db2.game_state)
         assert.are.equal(5, db2.game_state.level)
@@ -133,5 +125,56 @@ describe("FlatDB", function()
         local success = db:clear_page("logs")
         assert.is_true(success)
         assert.are.equal(0, #db.logs)
+
+        -- cleanup to not affect other tests
+        flatdb.hack.clear_page = nil
+    end)
+
+    -- =============================================================================
+    -- TESTS FOR MODULE BEHAVIOR (INDEXING & MEMORY MANAGEMENT)
+    -- =============================================================================
+
+    describe("Module Indexing and Caching", function()
+        it("should retrieve a loaded db object by its path", function()
+            local db = flatdb(TEST_DIR)
+            local retrieved_db = flatdb[TEST_DIR]
+            assert.is_not_nil(retrieved_db)
+            assert.are.same(db, retrieved_db)
+        end)
+
+        it("should retrieve a loaded db's path by its object reference", function()
+            local db = flatdb(TEST_DIR)
+            local retrieved_path = flatdb[db]
+            assert.is_not_nil(retrieved_path)
+            assert.are.equal(TEST_DIR, retrieved_path)
+        end)
+
+        it("should return nil when retrieving a non-loaded db by path", function()
+            assert.is_nil(flatdb["./some_other_dir"])
+        end)
+
+        it("should return the same instance for the same path", function()
+            local db1 = flatdb(TEST_DIR)
+            local db2 = flatdb(TEST_DIR)
+            assert.are.same(db1, db2)
+        end)
+    end)
+
+    describe("Weak Reference Memory Management", function()
+        it("should allow a database object to be garbage collected", function()
+            do
+                local db = flatdb(TEST_DIR)
+                db.users = { name = "Temporary User" }
+                assert.is_not_nil(flatdb[TEST_DIR])
+            end -- db goes out of scope here
+
+            collectgarbage("collect")
+            
+            -- Because the reference in the pool is weak, the GC should have cleared it.
+            -- When we request the db again, we should get a *new* instance,
+            -- and the 'users' page should be gone from memory (it was never saved).
+            local db_reloaded = flatdb(TEST_DIR)
+            assert.is_nil(db_reloaded.users, "The 'users' page should not be in memory after GC.")
+        end)
     end)
 end)
